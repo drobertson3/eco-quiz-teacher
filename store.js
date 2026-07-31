@@ -129,8 +129,13 @@ const Store = (() => {
       seen: {},          // qid -> times seen
       lastSeen: {},      // qid -> timestamp
       wrong: [],         // qids currently answered wrong (cleared when later answered right)
+      terms: {},         // glossary termId -> {seen, miss, last, ease, ivl, due}  (Matching / Flashcards / Definition Quiz)
+      diagrams: {},      // diagram id -> {best, runs, last}  (Diagram Labelling)
+      conceptTotals: {}, // mode -> lifetime count of items attempted (flashcards, chains, ...)
+      syl: {plays:0, rounds:0, correct:0, bestStreak:0, perSub:{}, perGame:{}},  // syllabus drills
       attempts: [],      // {d, n, c, timeSec, timed, mode, topics:{t:[c,tot]}, subs:{'T|S':[c,tot]}}
-      totals: { answered: 0, correct: 0, perTopic: {}, perSub: {} },
+      totals: { answered: 0, correct: 0, perTopic: {}, perSub: {},
+                perTopicQ: {} },   // perTopicQ excludes concept modes, so mastery badges stay exam-based
       bestStreak: 0
     };
   }
@@ -459,10 +464,10 @@ const BADGES = [
   {id:'streak_10',   emoji:'⚡', name:'Unstoppable',   desc:'Answer 10 in a row correctly'},
   {id:'centurion',   emoji:'💯', name:'Centurion',     desc:'Answer 100 questions in total'},
   {id:'explorer',    emoji:'🗺️', name:'Explorer',      desc:'See every question in the bank'},
-  {id:'ops_master',  emoji:'🏭', name:'Operations Master', desc:'85%+ accuracy over 25+ Operations questions'},
-  {id:'mkt_master',  emoji:'📣', name:'Marketing Master',  desc:'85%+ accuracy over 25+ Marketing questions'},
-  {id:'fin_master',  emoji:'💰', name:'Finance Master',    desc:'85%+ accuracy over 25+ Finance questions'},
-  {id:'hr_master',   emoji:'👥', name:'HR Master',         desc:'85%+ accuracy over 25+ Human Resources questions'},
+  {id:'ops_master',  emoji:'🌏', name:'Global Economist',  desc:'85%+ accuracy over 25+ Global Economy questions'},
+  {id:'mkt_master',  emoji:'🇦🇺', name:'Open Economy Expert', desc:'85%+ accuracy over 25+ Australia & Global Economy questions'},
+  {id:'fin_master',  emoji:'📊', name:'Issues Analyst',    desc:'85%+ accuracy over 25+ Economic Issues questions'},
+  {id:'hr_master',   emoji:'🏛️', name:'Policy Master',     desc:'85%+ accuracy over 25+ Economic Policies questions'},
   {id:'comeback',    emoji:'🔁', name:'Comeback Kid',  desc:'Score 80%+ on a My Mistakes quiz'},
   {id:'pacer',       emoji:'⏱️', name:'Exam Pacer',    desc:'Finish a timed quiz averaging under 60s a question'},
   {id:'streak_15',   emoji:'🌟', name:'Legendary',     desc:'Answer 15 in a row correctly'},
@@ -497,37 +502,64 @@ const BADGES = [
   {id:'peer_10',     emoji:'📋', name:'Marking Centre',desc:'Peer mark 10 answers'},
   {id:'peer_sharp',  emoji:'🔍', name:'Chief Examiner',desc:'Match the teacher exactly 5 times'},
   {id:'sa_submitted',emoji:'📮', name:'Handed In',     desc:'Submit a short answer for marking'},
+  // --- concept library / matching ---
+  {id:'match_first', emoji:'🔗', name:'Pair Up',        desc:'Finish your first Matching session'},
+  {id:'match_clean', emoji:'✨', name:'Clean Sweep',    desc:'Match every pair first try in a session'},
+  {id:'match_50',    emoji:'📚', name:'Term Collector', desc:'Practise 50 different concepts'},
+  {id:'match_150',   emoji:'🧠', name:'Walking Glossary',desc:'Practise 150 different concepts'},
+  {id:'flash_first', emoji:'🎴', name:'First Review',   desc:'Complete a flashcard session'},
+  {id:'flash_100',   emoji:'📇', name:'Card Shark',      desc:'Review 100 flashcards in total'},
+  {id:'def_first',   emoji:'📖', name:'By Definition',   desc:'Complete a Definition Quiz'},
+  {id:'def_perfect', emoji:'🧮', name:'Word Perfect',    desc:'Score 100% on a 10+ question Definition Quiz'},
+  {id:'chain_first', emoji:'⛓️', name:'First Link',     desc:'Build your first cause-and-effect chain'},
+  {id:'chain_clean', emoji:'🔗', name:'Unbroken',        desc:'Build every chain in a session with no wrong steps'},
+  {id:'chain_25',    emoji:'🧵', name:'Chain Reaction',  desc:'Build 25 chains correctly'},
+  {id:'diag_first',  emoji:'📐', name:'Draughtsman',     desc:'Label your first diagram'},
+  {id:'diag_perfect',emoji:'✏️', name:'Fully Labelled', desc:'Label a diagram with every label first try'},
+  {id:'diag_all',    emoji:'🗺️', name:'Cartographer',   desc:'Attempt every diagram in the bank'},
+  // --- syllabus drills ---
+  {id:'syl_first',   emoji:'🧠', name:'Dot Point Rookie', desc:'Complete your first Syllabus Drill'},
+  {id:'syl_perfect', emoji:'🎯', name:'Syllabus Sniper',  desc:'Perfect score on a 10+ round Syllabus Drill'},
+  {id:'syl_100',     emoji:'📖', name:'Deep Reader',      desc:'Answer 100 Syllabus Drill rounds'},
+  {id:'syl_master',  emoji:'🗂️', name:'Syllabus Master',  desc:'85%+ accuracy over 100+ Syllabus Drill rounds'},
+  {id:'syl_allgames',emoji:'🕹️', name:'Four of a Kind',   desc:'Play all four Syllabus Drill games'},
 ];
+
+// Concept-practice modes. They feed XP and the teacher's topic analysis, but are
+// deliberately excluded from badges that describe sitting a set of exam questions.
+const CONCEPT_MODES = new Set(['matching','flashcards','defquiz','chains','diagrams','syllabus']);
+function isConceptMode(mode){ return CONCEPT_MODES.has(mode); }
 
 function evaluateBadges(student, attempt, totalQuestions){
   const earned = [];
   const has = id => student.badges.includes(id);
   const t = student.totals;
   const topicAcc = (topic) => {
-    const p = t.perTopic[topic]; return p && p[1] >= 25 ? p[0]/p[1] : 0;
+    const p = (t.perTopicQ || {})[topic]; return p && p[1] >= 25 ? p[0]/p[1] : 0;
   };
+  const examAttempt = attempt && !isConceptMode(attempt.mode);
   const answering = answeringAttempts(student);   // peer marking isn't "doing a quiz"
   const checks = {
     first_steps: () => answering.length >= 1,
-    full_section: () => attempt && attempt.n >= 20,
-    sharpshooter: () => attempt && attempt.n >= 10 && attempt.c === attempt.n,
+    full_section: () => examAttempt && attempt.n >= 20,
+    sharpshooter: () => examAttempt && attempt.n >= 10 && attempt.c === attempt.n,
     streak_5:  () => student.bestStreak >= 5,
     streak_10: () => student.bestStreak >= 10,
     centurion: () => t.answered >= 100,
     explorer:  () => Object.keys(student.seen).length >= totalQuestions,
-    ops_master:() => topicAcc('Operations') >= 0.85,
-    mkt_master:() => topicAcc('Marketing') >= 0.85,
-    fin_master:() => topicAcc('Finance') >= 0.85,
-    hr_master: () => topicAcc('Human Resources') >= 0.85,
+    ops_master:() => topicAcc('Global Economy') >= 0.85,
+    mkt_master:() => topicAcc('Australia & Global Economy') >= 0.85,
+    fin_master:() => topicAcc('Economic Issues') >= 0.85,
+    hr_master: () => topicAcc('Economic Policies') >= 0.85,
     comeback:  () => attempt && attempt.mode === 'mistakes' && attempt.n > 0 && attempt.c / attempt.n >= 0.8,
-    pacer:     () => attempt && attempt.timed && attempt.n > 0 && (attempt.timeSec / attempt.n) < 60,
+    pacer:     () => examAttempt && attempt.timed && attempt.n > 0 && (attempt.timeSec / attempt.n) < 60,
     streak_15: () => student.bestStreak >= 15,
     dedication:() => answering.length >= 10,
     veteran:   () => answering.length >= 25,
     double_cent:() => t.answered >= 200,
-    all_rounder:() => ['Operations','Marketing','Finance','Human Resources']
-                      .every(tp => t.perTopic[tp] && t.perTopic[tp][1] >= 10),
-    perfectionist:() => attempt && attempt.n >= 20 && attempt.c === attempt.n,
+    all_rounder:() => ['Global Economy','Australia & Global Economy','Economic Issues','Economic Policies']
+                      .every(tp => (t.perTopicQ || {})[tp] && t.perTopicQ[tp][1] >= 10),
+    perfectionist:() => examAttempt && attempt.n >= 20 && attempt.c === attempt.n,
     clean_slate:() => attempt && attempt.mode === 'mistakes' && student.wrong.length === 0,
     high_flyer:() => levelFromXp(student.xp) >= 5,
     early_bird:() => attempt && new Date(attempt.d).getHours() < 8,
@@ -553,6 +585,25 @@ function evaluateBadges(student, attempt, totalQuestions){
     peer_10:   () => (student.peer?.count || 0) >= 10,
     peer_sharp:() => (student.peer?.exact || 0) >= 5,
     sa_submitted:() => (student.sa?.submitted || 0) >= 1,
+    match_first:() => attempt && attempt.mode === 'matching',
+    match_clean:() => attempt && attempt.mode === 'matching' && attempt.n > 0 && attempt.c === attempt.n,
+    match_50:  () => Object.keys(student.terms || {}).length >= 50,
+    match_150: () => Object.keys(student.terms || {}).length >= 150,
+    flash_first:() => attempt && attempt.mode === 'flashcards',
+    flash_100: () => (student.conceptTotals?.flashcards || 0) >= 100,
+    def_first: () => attempt && attempt.mode === 'defquiz',
+    def_perfect:() => attempt && attempt.mode === 'defquiz' && attempt.n >= 10 && attempt.c === attempt.n,
+    chain_first:() => attempt && attempt.mode === 'chains',
+    chain_clean:() => attempt && attempt.mode === 'chains' && attempt.n > 0 && attempt.c === attempt.n,
+    chain_25:  () => (student.conceptTotals?.chains || 0) >= 25,
+    diag_first:() => attempt && attempt.mode === 'diagrams',
+    diag_perfect:() => attempt && attempt.mode === 'diagrams' && attempt.n > 0 && attempt.c === attempt.n,
+    diag_all:  () => Object.keys(student.diagrams || {}).length >= (typeof DIAGRAMS !== 'undefined' ? DIAGRAMS.length : 9),
+    syl_first:  () => (student.syl?.plays || 0) >= 1,
+    syl_perfect:() => attempt && attempt.mode === 'syllabus' && attempt.n >= 10 && attempt.c === attempt.n,
+    syl_100:    () => (student.syl?.rounds || 0) >= 100,
+    syl_master: () => (student.syl?.rounds || 0) >= 100 && (student.syl.correct / student.syl.rounds) >= 0.85,
+    syl_allgames:()=> Object.keys(student.syl?.perGame || {}).length >= 4,
   };
   for (const b of BADGES) {
     if (!has(b.id) && checks[b.id] && checks[b.id]()) { student.badges.push(b.id); earned.push(b); }

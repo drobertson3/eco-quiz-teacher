@@ -227,12 +227,23 @@ function modeLabel(a){
     case 'survival':    return '💀 Survival';
     case 'exam':        return '📄 Exam sim';
     case 'duel':        return '🥊 Duel';
+    case 'matching':    return '🔗 Matching';
+    case 'flashcards':  return '🎴 Flashcards';
+    case 'defquiz':     return '📖 Definitions';
+    case 'chains':      return '⛓️ Chains';
+    case 'diagrams':    return '📐 Diagrams';
+    case 'syllabus':    return '🧠 Syllabus' + (a.game ? ' · ' + ({match:'Belongs',fill:'Fill sub',odd:'Odd one',cloze:'Gap'}[a.game] || a.game) : '');
     default:            return (a.timed ? '⏱ ' : '') + 'Quiz';
   }
 }
 function scoreLabel(a){
   if (a.mode === 'survival') return `<b>${a.runLength ?? a.c}</b> in a row`;
-  return `<b>${a.c}/${a.n}</b> (${a.n ? Math.round(a.c/a.n*100) : 0}%${a.mode === 'shortanswer' ? ' of marks' : ''})`;
+  const unit = a.mode === 'shortanswer' ? ' of marks'
+             : a.mode === 'matching' || a.mode === 'diagrams' ? ' first try'
+             : a.mode === 'flashcards' ? ' self-rated'
+             : a.mode === 'chains' ? ' clean'
+             : a.mode === 'syllabus' ? ' rounds' : '';
+  return `<b>${a.c}/${a.n}</b> (${a.n ? Math.round(a.c/a.n*100) : 0}%${unit})`;
 }
 
 function renderOverview(){
